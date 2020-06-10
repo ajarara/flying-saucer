@@ -2,15 +2,16 @@ plugins {
     kotlin("jvm")
 }
 
-group = "org.example"
-version = "1.0-SNAPSHOT"
-
 repositories {
     mavenCentral()
 }
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
+
+    testImplementation(Testing.KoTest.runner)
+    testImplementation(Testing.KoTest.assertions)
+    testImplementation(Testing.jupiter)
 }
 
 tasks {
@@ -19,5 +20,8 @@ tasks {
     }
     compileTestKotlin {
         kotlinOptions.jvmTarget = "1.8"
+    }
+    withType(Test::class.java) {
+        useJUnitPlatform()
     }
 }
