@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm")
+    id("application")
 }
 
 group = "org.example"
@@ -9,8 +10,13 @@ repositories {
     mavenCentral()
 }
 
+application {
+    mainClassName = "io.ajarara.flyingSaucer.MainKt"
+}
+
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
+    implementation("com.github.ajalt:clikt:2.7.1")
 }
 
 tasks {
