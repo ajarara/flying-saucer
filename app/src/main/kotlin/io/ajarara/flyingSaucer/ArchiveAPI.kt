@@ -22,7 +22,12 @@ interface ArchiveAPI {
     @HEAD("download/{movie}")
     fun check(@Path("movie", encoded = true) path: String): Single<Response<Void>>
 
-    // https://archive.org/download/Plan_9_from_Outer_Space_1959/Plan_9_from_Outer_Space_1959_512kb.mp4
+    @HEAD("download/{movie}")
+    fun check(
+        @Path("movie", encoded = true) path: String,
+        @Header("Range") bytes: String
+    ): Single<Response<Void>>
+
     @GET("download/{movie}")
     fun download(
         @Path("movie", encoded = true) path: String,
@@ -41,11 +46,9 @@ interface ArchiveAPI {
                 type: Type,
                 annotations: Array<Annotation>,
                 retrofit: Retrofit
-            ): Converter<ResponseBody, *>? {
-                if (type == ByteArray::class.java) {
-                    return ByteArrayConverter
-                }
-                return null
+            ): Converter<ResponseBody, *>? = when (type) {
+                ByteArray::class.java -> ByteArrayConverter
+                else -> null
             }
 
             private object ByteArrayConverter : Converter<ResponseBody, ByteArray> {
