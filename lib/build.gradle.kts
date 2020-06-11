@@ -8,6 +8,7 @@ repositories {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
+    implementation(Data.result)
 
     testImplementation(Testing.KoTest.runner)
     testImplementation(Testing.KoTest.assertions)

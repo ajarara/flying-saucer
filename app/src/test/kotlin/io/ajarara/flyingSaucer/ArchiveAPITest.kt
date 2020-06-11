@@ -2,8 +2,6 @@ package io.ajarara.flyingSaucer
 
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
-import io.reactivex.Observable
-import io.reactivex.Observer
 import io.reactivex.Single
 import io.reactivex.functions.BiFunction
 import retrofit2.Response
@@ -51,7 +49,7 @@ internal class ArchiveAPITest : StringSpec({
 
     "a download request that spans across the content length returns a 206" {
         val satisfiedSpanningRequest = contentLength(plan9)
-            .flatMap { contentLength -> ArchiveAPI.Impl.download(plan9, "bytes=${contentLength - 10}-${contentLength+10}")}
+            .flatMap { contentLength -> ArchiveAPI.Impl.download(plan9, "bytes=${contentLength-10}-${contentLength+10}")}
             .blockingGet()
 
 
