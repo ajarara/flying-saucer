@@ -1,6 +1,7 @@
 package io.ajarara.flyingSaucer
 
 import io.kotest.core.spec.style.StringSpec
+import io.kotest.core.test.TestCaseConfig
 import io.kotest.matchers.shouldBe
 import io.reactivex.Single
 import io.reactivex.functions.BiFunction

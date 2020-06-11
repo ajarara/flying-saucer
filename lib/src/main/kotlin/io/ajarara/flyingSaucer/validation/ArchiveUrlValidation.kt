@@ -19,12 +19,16 @@ fun parseMovie(unsanitizedInput: String): Result<String, ArchiveUrlValidationErr
     if (!uri.host.endsWith("archive.org")) {
         return Err(ArchiveUrlValidationError.UnknownHost(uri.host))
     }
-    return Ok("")
+    if (!uri.path.startsWith("/download/")) {
+        return Err(ArchiveUrlValidationError.NotADownload(uri.path))
+    }
+    return Ok(uri.path.substringAfter("/download/"))
 }
 
 sealed class ArchiveUrlValidationError {
     class InvalidURLSyntax(val unsanitizedInput: String) : ArchiveUrlValidationError()
     class IncorrectScheme(val wrongScheme: String) : ArchiveUrlValidationError()
+    class NotADownload(val path: String) : ArchiveUrlValidationError()
     class UnknownHost(val host: String) : ArchiveUrlValidationError()
 }
 
