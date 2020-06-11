@@ -11,7 +11,7 @@ import io.reactivex.functions.BiFunction
 import okhttp3.ResponseBody
 import retrofit2.Response
 
-internal class ArchiveAPITest: StringSpec({
+internal class ArchiveAPITest : StringSpec({
 
     val plan9 = "Plan_9_from_Outer_Space_1959/Plan_9_from_Outer_Space_1959_512kb.mp4"
 
@@ -32,16 +32,24 @@ internal class ArchiveAPITest: StringSpec({
     }
 
     "download returns the same etag as check does" {
-        val (downloadResponse, headResponse) = with(ArchiveAPI.Impl) {
+        val (downloadResponse, headResponse) =
             Single.zip(
-                download(plan9, "bytes=0-1023"),
-                check(plan9),
+                ArchiveAPI.Impl.download(plan9, "bytes=0-1023"),
+                ArchiveAPI.Impl.check(plan9),
                 BiFunction { downloadResponse: Response<ByteArray>, headResponse: Response<Void> ->
                     downloadResponse to headResponse
                 }
             ).blockingGet()
-        }
 
         downloadResponse.headers()["ETag"] shouldBe headResponse.headers()["ETag"]
+    }
+
+    "a download request that has a range that exceeds content length returns a 416" {
+        val unsatisfiableRequest = ArchiveAPI.Impl.check(plan9)
+            .map { response -> response.headers()["Content-Length"] }
+            .flatMap { contentLength -> ArchiveAPI.Impl.download(plan9, "bytes=$contentLength-${contentLength+10}")}
+            .blockingGet()
+
+        unsatisfiableRequest.code() shouldBe 416
     }
 })
