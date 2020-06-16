@@ -12,7 +12,6 @@ import io.reactivex.Observable
 import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
-import java.net.HttpURLConnection
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,10 +26,10 @@ object Main : CliktCommand() {
 
     private val concurrentRequestMax: Int by option(help = "Number of requests to run simultaneously")
         .int()
-        .default(1)
+        .default(32)
 
-    private val cacheToDisk: Boolean by option(help = "Store partially downloaded files in /tmp")
-        .flag(default = tempDir.exists() && tempDir.isDirectory && tempDir.canWrite())
+    private val noCache: Boolean by option(help = "Do not store partially downloaded files on disk")
+        .flag("--no-cache")
         .validate { shouldCache ->
             if (shouldCache) {
                 require(tempDir.exists()) {
@@ -84,18 +83,21 @@ object Main : CliktCommand() {
 
         val fileSystemName = movie.substringBefore("/")
 
-        val chunkRepo = if (cacheToDisk) {
-            DiskBackedChunkRepo(tempDir, fileSystemName, etag)
-        } else {
+        val chunkRepo = if (noCache) {
             InMemoryChunkRepo()
+        } else {
+            DiskBackedChunkRepo(tempDir, fileSystemName, etag)
         }
 
         val endOfFileReached = AtomicBoolean()
 
-        Observable.interval(250, TimeUnit.MILLISECONDS)
+        println()
+        Observable.interval(10, TimeUnit.MILLISECONDS)
             .map { it.toInt() }
             .takeUntil { endOfFileReached.get() }
+            .filter { chunkRepo.get(it) == null }
             .flatMap({ chunkNo ->
+                print("\rDownloading chunk $chunkNo")
                 val start = chunkNo * chunkSize
                 val bytes = "bytes=${start}-${start + chunkSize - 1}"
                 ArchiveAPI.Impl.download(movie, bytes, etag)
@@ -105,10 +107,16 @@ object Main : CliktCommand() {
                     .toObservable()
             }, false, concurrentRequestMax)
             .blockingSubscribe { chunkRepo.set(it.number, it.data) }
+        println()
 
-        val out = File(System.getProperty("user.dir", movie.substringAfterLast("/"))).apply { createNewFile() }
+        val out = File(System.getProperty("user.dir"), movie.substringAfterLast("/")).apply {
+            val freshFile = createNewFile()
+            require(freshFile) {
+                "TODO: This should be checked before downloading"
+            }
+        }
 
-        chunkRepo.chunks().forEach { out.writeBytes(it) }
+        chunkRepo.chunks().forEach { out.appendBytes(it) }
 
         println("Done!")
     }
@@ -157,8 +165,9 @@ class InMemoryChunkRepo : ChunkRepo {
 
 class DiskBackedChunkRepo(topLevelTmpDir: File, private val name: String, private val etag: String) : ChunkRepo {
     private val root: File = topLevelTmpDir.listFiles()!!
+
         .singleOrNull { it.name == name }
-        ?: File(topLevelTmpDir.path, name).apply { mkdir() }
+        ?: File(topLevelTmpDir.path + "/flying-saucer", name).apply { mkdir() }
 
     override fun get(chunkNo: Int): ByteArray? = chunkFile(chunkNo).run {
         if (exists()) {
@@ -184,7 +193,8 @@ class DiskBackedChunkRepo(topLevelTmpDir: File, private val name: String, privat
             ?: return emptySequence()
 
         return sequence {
-            for (i in 0..(lastChunk + 1)) {
+            for (i in 0..lastChunk) {
+                print("\rWriting chunk $lastChunk")
                 yield(get(i)!!)
             }
         }
