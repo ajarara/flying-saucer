@@ -6,7 +6,7 @@ sealed class DownloadResult {
 
     object Empty : DownloadResult()
 
-    class InvalidETag(val number: Int) : DownloadResult()
+    object InvalidETag : DownloadResult()
 
     class Chunk(val number: Int, val data: ByteArray) : DownloadResult()
 
@@ -17,7 +17,7 @@ sealed class DownloadResult {
             return when (code) {
                 416 -> Empty
                 HttpURLConnection.HTTP_PARTIAL -> Chunk(chunkNo, body!!)
-                HttpURLConnection.HTTP_PRECON_FAILED -> InvalidETag(chunkNo)
+                HttpURLConnection.HTTP_PRECON_FAILED -> InvalidETag
                 else -> Unknown
             }
         }
