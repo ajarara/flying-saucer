@@ -3,6 +3,7 @@ package io.ajarara.flyingSaucer
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.reactivex.Completable
 import io.reactivex.Single
+import io.reactivex.schedulers.Schedulers
 import okhttp3.Request
 import okhttp3.ResponseBody
 import retrofit2.Converter
@@ -44,7 +45,7 @@ interface ArchiveAPI {
     object Impl : ArchiveAPI by Retrofit.Builder()
         .baseUrl("https://archive.org/")
         .addConverterFactory(ByteArrayConverterFactory)
-        .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
+        .addCallAdapterFactory(RxJava2CallAdapterFactory.createWithScheduler(Schedulers.computation()))
         .build()
         .create(ArchiveAPI::class.java) {
 

@@ -4,7 +4,9 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.michaelbull.result.*
-import io.ajarara.flyingSaucer.response.DownloadResult
+import io.ajarara.flyingSaucer.download.DownloadResult
+import io.ajarara.flyingSaucer.download.HeadResponse
+import io.ajarara.flyingSaucer.download.Headers
 import io.ajarara.flyingSaucer.validation.ArchiveUrlValidationError
 import io.ajarara.flyingSaucer.validation.parseMovie
 import io.reactivex.Maybe
@@ -13,7 +15,6 @@ import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -26,10 +27,10 @@ object Main : CliktCommand() {
 
     private val concurrentRequestMax: Int by option(help = "Number of requests to run simultaneously")
         .int()
-        .default(32)
+        .default(4)
 
-    private val noCache: Boolean by option(help = "Do not store partially downloaded files on disk")
-        .flag("--no-cache")
+    private val noCache: Boolean by option(help = "Do not cache chunks on disk in between runs")
+        .flag()
         .validate { shouldCache ->
             if (shouldCache) {
                 require(tempDir.exists()) {
@@ -67,40 +68,36 @@ object Main : CliktCommand() {
     }
 
     private fun download(movie: String) {
+        val fileSystemName = movie.substringBefore("/")
+        val out = File(System.getProperty("user.dir"), movie.substringAfterLast("/")).apply {
+            if (exists()) {
+                println("File $name already exists! Aborting.")
+                exitProcess(-1)
+            }
+        }
+
         print("Checking if the download '$movie' exists: ")
         val headResponse = ArchiveAPI.Impl.check(movie)
+            .map { HeadResponse.of(it.code(), it.headers().toMultimap()) }
             .blockingGet()
-        if (headResponse.code() != 200) {
-            println("It does not. Exiting.")
-            exitProcess(-1)
-        }
-
-        val etag = headResponse.headers()["ETag"] ?: run {
-            println("It does, but does not have an ETag!")
-            exitProcess(-1)
-        }
-        println("It does! Starting download.")
-
-        val fileSystemName = movie.substringBefore("/")
+        val etag = handleHeadResponse(headResponse)
 
         val chunkRepo = if (noCache) {
             InMemoryChunkRepo()
         } else {
-            DiskBackedChunkRepo(tempDir, fileSystemName, etag)
+            val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
+            DiskBackedChunkRepo(projectDir, fileSystemName, etag)
         }
 
-        val endOfFileReached = AtomicBoolean()
-
         println()
-        Observable.interval(10, TimeUnit.MILLISECONDS)
-            .map { it.toInt() }
+        val endOfFileReached = AtomicBoolean()
+        Observable.range(0, Int.MAX_VALUE)
             .takeUntil { endOfFileReached.get() }
             .filter { chunkRepo.get(it) == null }
             .flatMap({ chunkNo ->
-                print("\rDownloading chunk $chunkNo")
-                val start = chunkNo * chunkSize
-                val bytes = "bytes=${start}-${start + chunkSize - 1}"
-                ArchiveAPI.Impl.download(movie, bytes, etag)
+                val bytes = Headers.bytesOf(chunkNo, chunkSize)
+
+                ArchiveAPI.Impl.download(movie, bytes, etag.etag)
                     .doOnSuccess { if (it.code() == 416) endOfFileReached.set(true) }
                     .flatMapMaybe { handleResponse(chunkNo, it) }
                     .retry(2)
@@ -109,25 +106,46 @@ object Main : CliktCommand() {
             .blockingSubscribe { chunkRepo.set(it.number, it.data) }
         println()
 
-        val out = File(System.getProperty("user.dir"), movie.substringAfterLast("/")).apply {
-            val freshFile = createNewFile()
-            require(freshFile) {
-                "TODO: This should be checked before downloading"
-            }
+        out.apply {
+            createNewFile()
+            chunkRepo.chunks().forEach(::appendBytes)
         }
-
-        chunkRepo.chunks().forEach { out.appendBytes(it) }
 
         println("Done!")
     }
 
+    private fun handleHeadResponse(headResponse: HeadResponse): HeadResponse.ETag =
+        when (headResponse) {
+            is HeadResponse.Error -> {
+                when (headResponse) {
+                    is HeadResponse.Error.NotOk -> println(
+                        "Got a non-200 response from the check: ${headResponse.code}"
+                    )
+                    is HeadResponse.Error.NoETag -> println(
+                        "Did not get any ETag from the check!"
+                    )
+                    is HeadResponse.Error.MultipleETags -> println(
+                        "Multiple ETags returned, ambiguous: ${headResponse.etags}"
+                    )
+                }
+                exitProcess(-1)
+            }
+            is HeadResponse.ETag -> {
+                println("It does! Downloading.")
+                headResponse
+            }
+        }
+
     private fun handleResponse(chunkNo: Int, response: Response<ByteArray>): Maybe<DownloadResult.Chunk> =
         when (val result = DownloadResult.from(response.code(), chunkNo, response.body())) {
             is DownloadResult.Empty -> Maybe.empty()
-            is DownloadResult.Chunk -> Maybe.just(result)
+            is DownloadResult.Chunk -> {
+                print("\rDownloading chunk $chunkNo")
+                Maybe.just(result)
+            }
             is DownloadResult.InvalidETag -> Maybe.error(
                 IllegalStateException(
-                    "ETag changed while downloading at chunk ${result.number}! All previous chunks are invalid."
+                    "ETag changed while downloading at chunk $chunkNo! All previous chunks are invalid."
                 )
             )
             is DownloadResult.Unknown -> Maybe.error(
@@ -156,18 +174,23 @@ class InMemoryChunkRepo : ChunkRepo {
     override fun chunks(): Sequence<ByteArray> {
         val snapshot = chunkMap.toMap()
         return sequence {
-            for (i in 0..snapshot.size) {
-                yield(snapshot.getValue(i))
+            for (i in 0 until snapshot.size) {
+                val chunk = requireNotNull(snapshot[i]) {
+                    "Missing chunk $i of ${snapshot.size}"
+                }
+
+                yield(chunk)
             }
         }
     }
 }
 
-class DiskBackedChunkRepo(topLevelTmpDir: File, private val name: String, private val etag: String) : ChunkRepo {
-    private val root: File = topLevelTmpDir.listFiles()!!
-
-        .singleOrNull { it.name == name }
-        ?: File(topLevelTmpDir.path + "/flying-saucer", name).apply { mkdir() }
+class DiskBackedChunkRepo(
+    topLevelTmpDir: File,
+    private val name: String,
+    private val etag: HeadResponse.ETag
+) : ChunkRepo {
+    private val root: File = File(topLevelTmpDir.path, name).apply { mkdir() }
 
     override fun get(chunkNo: Int): ByteArray? = chunkFile(chunkNo).run {
         if (exists()) {
@@ -194,13 +217,15 @@ class DiskBackedChunkRepo(topLevelTmpDir: File, private val name: String, privat
 
         return sequence {
             for (i in 0..lastChunk) {
-                print("\rWriting chunk $lastChunk")
-                yield(get(i)!!)
+                val chunk = requireNotNull(get(i)) {
+                    "Missing chunk $i of $lastChunk on disk! Chunks can be found in ${root.path}"
+                }
+                yield(chunk)
             }
         }
     }
 
-    private fun chunkFile(chunkNo: Int) = File(root.path, "$etag.$chunkNo")
+    private fun chunkFile(chunkNo: Int) = File(root.path, "${etag.etag}.$chunkNo")
 }
 
 fun main(args: Array<String>) = Main.main(args)

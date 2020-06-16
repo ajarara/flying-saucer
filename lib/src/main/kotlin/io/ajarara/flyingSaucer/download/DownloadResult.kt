@@ -1,4 +1,4 @@
-package io.ajarara.flyingSaucer.response
+package io.ajarara.flyingSaucer.download
 
 import java.net.HttpURLConnection
 
