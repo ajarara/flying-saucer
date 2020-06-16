@@ -31,6 +31,13 @@ interface ArchiveAPI {
     @GET("download/{movie}")
     fun download(
         @Path("movie", encoded = true) path: String,
+        @Header("Range") bytes: String,
+        @Header("If-Exists") etag: String
+    ): Single<Response<ByteArray>>
+
+    @GET("download/{movie}")
+    fun uncheckedDownload(
+        @Path("movie", encoded = true) path: String,
         @Header("Range") bytes: String
     ): Single<Response<ByteArray>>
 

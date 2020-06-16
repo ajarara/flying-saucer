@@ -10,9 +10,12 @@ fun parseMovie(unsanitizedInput: String): Result<String, ArchiveUrlValidationErr
     val uri = try {
         URI(unsanitizedInput)
     } catch (e: URISyntaxException) {
-        return Err(ArchiveUrlValidationError.InvalidURLSyntax(unsanitizedInput))
+        return Err(ArchiveUrlValidationError.InvalidURLSyntax(unsanitizedInput, e.reason))
     }
 
+    if (uri.scheme == null) {
+        return Err(ArchiveUrlValidationError.MissingScheme)
+    }
     if (uri.scheme != "https") {
         return Err(ArchiveUrlValidationError.IncorrectScheme(uri.scheme))
     }
@@ -26,7 +29,8 @@ fun parseMovie(unsanitizedInput: String): Result<String, ArchiveUrlValidationErr
 }
 
 sealed class ArchiveUrlValidationError {
-    class InvalidURLSyntax(val unsanitizedInput: String) : ArchiveUrlValidationError()
+    class InvalidURLSyntax(val inputString: String, val reason: String) : ArchiveUrlValidationError()
+    object MissingScheme : ArchiveUrlValidationError()
     class IncorrectScheme(val wrongScheme: String) : ArchiveUrlValidationError()
     class NotADownload(val path: String) : ArchiveUrlValidationError()
     class UnknownHost(val host: String) : ArchiveUrlValidationError()

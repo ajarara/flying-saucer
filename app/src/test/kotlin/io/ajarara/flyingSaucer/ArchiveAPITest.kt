@@ -12,15 +12,15 @@ internal class ArchiveAPITest : StringSpec({
 
 
     "check HEADs against a known Accept-Range endpoint" {
-        val headers = ArchiveAPI.Impl.check(plan9)
+        val response = ArchiveAPI.Impl.check(plan9)
             .blockingGet()
-            .headers()
 
-        headers["accept-ranges"] shouldBe "bytes"
+        response.code() shouldBe HttpURLConnection.HTTP_OK
+        response.headers()["accept-ranges"] shouldBe "bytes"
     }
 
     "download returns only number of bytes we request" {
-        val response = ArchiveAPI.Impl.download(plan9, "bytes=0-1023")
+        val response = ArchiveAPI.Impl.uncheckedDownload(plan9, "bytes=0-1023")
             .blockingGet()
 
         response.code() shouldBe HttpURLConnection.HTTP_PARTIAL
@@ -28,14 +28,15 @@ internal class ArchiveAPITest : StringSpec({
     }
 
     "download returns the same etag as check does" {
-        val (downloadResponse, headResponse) =
-            Single.zip(
-                ArchiveAPI.Impl.download(plan9, "bytes=256-1279"),
-                ArchiveAPI.Impl.check(plan9),
-                BiFunction { downloadResponse: Response<ByteArray>, headResponse: Response<Void> ->
-                    downloadResponse to headResponse
-                }
-            ).blockingGet()
+        val (downloadResponse, headResponse) = ArchiveAPI.Impl.check(plan9)
+            .flatMap { checkResponse ->
+                ArchiveAPI.Impl.download(
+                    plan9,
+                    bytes = "bytes=256-1279",
+                    etag = checkResponse.headers()["ETag"]!!
+                ).map { downloadResponse -> checkResponse to downloadResponse }
+            }
+            .blockingGet()
 
         downloadResponse.headers()["ETag"] shouldBe headResponse.headers()["ETag"]
     }

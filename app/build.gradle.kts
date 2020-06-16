@@ -12,8 +12,9 @@ application {
 }
 
 dependencies {
-    implementation(kotlin("stdlib-jdk8"))
     implementation(Data.result)
+    implementation(project(":lib"))
+    implementation(kotlin("stdlib-jdk8"))
     implementation("com.github.ajalt:clikt:2.7.1")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:adapter-rxjava2:2.7.1")
@@ -27,10 +28,10 @@ dependencies {
 
 tasks {
     compileKotlin {
-        kotlinOptions.jvmTarget = "1.8"
+        kotlinOptions.jvmTarget = "11"
     }
     compileTestKotlin {
-        kotlinOptions.jvmTarget = "1.8"
+        kotlinOptions.jvmTarget = "11"
     }
     withType(Test::class.java) {
         useJUnitPlatform()
