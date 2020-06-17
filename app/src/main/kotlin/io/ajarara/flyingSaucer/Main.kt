@@ -9,9 +9,10 @@ import io.ajarara.flyingSaucer.download.HeadResponse
 import io.ajarara.flyingSaucer.download.Headers
 import io.ajarara.flyingSaucer.validation.ArchiveUrlValidationError
 import io.ajarara.flyingSaucer.validation.parseMovie
-import io.reactivex.Flowable
 import io.reactivex.Maybe
 import io.reactivex.Observable
+import io.reactivex.Observer
+import io.reactivex.disposables.Disposable
 import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
@@ -29,7 +30,7 @@ object Main : CliktCommand() {
 
     private val concurrentRequestMax: Int by option(help = "Number of requests to run simultaneously")
         .int()
-        .default(32)
+        .default(8)
 
     private val noCache: Boolean by option(help = "Do not cache chunks on disk in between runs")
         .flag()
@@ -70,7 +71,7 @@ object Main : CliktCommand() {
     }
 
     private fun download(movie: String) {
-        val fileSystemName = movie.substringBefore("/")
+        val fileRepoFolder = movie.substringBefore("/")
         val out = File(System.getProperty("user.dir"), movie.substringAfterLast("/")).apply {
             if (exists()) {
                 println("File $name already exists! Aborting.")
@@ -88,15 +89,19 @@ object Main : CliktCommand() {
             InMemoryChunkRepo()
         } else {
             val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
-            DiskBackedChunkRepo(projectDir, fileSystemName, etag)
+            println("Stashing chunks in: ${projectDir.path}")
+            DiskBackedChunkRepo(projectDir, fileRepoFolder, etag)
         }
 
+        val start = chunkRepo.firstGap()
+        if (start != 0) println("Starting at chunk $start")
         println()
+
         val endOfFileReached = AtomicBoolean()
-        Observable.interval(10, TimeUnit.MILLISECONDS)
-            .map { it.toInt() }
+
+        Observable.interval(0, 100, TimeUnit.MILLISECONDS)
+            .map { it.toInt() + start }
             .takeUntil { endOfFileReached.get() }
-            .filter { chunkRepo.get(it) == null }
             .flatMap({ chunkNo ->
                 val bytes = Headers.bytesOf(chunkNo, chunkSize)
 
@@ -106,8 +111,20 @@ object Main : CliktCommand() {
                     .retry(2)
                     .toObservable()
             }, false, concurrentRequestMax)
-            .blockingSubscribe { chunkRepo.set(it.number, it.data) }
-        println()
+            .blockingSubscribe(object : Observer<DownloadResult.Chunk> {
+
+                override fun onNext(chunk: DownloadResult.Chunk) {
+                    chunkRepo.set(chunk.number, chunk.data)
+                }
+
+                override fun onError(t: Throwable) {
+                    println(t.message)
+                    exitProcess(-1)
+                }
+
+                override fun onComplete() {}
+                override fun onSubscribe(d: Disposable?) {}
+            })
 
         out.apply {
             require(createNewFile()) {
@@ -116,7 +133,7 @@ object Main : CliktCommand() {
             chunkRepo.chunks().forEach(::appendBytes)
         }
 
-        println("Done!")
+        println("\nDone!")
     }
 
     private fun handleHeadResponse(headResponse: HeadResponse): HeadResponse.ETag =
@@ -145,7 +162,7 @@ object Main : CliktCommand() {
         when (val result = DownloadResult.from(response.code(), chunkNo, response.body())) {
             is DownloadResult.Empty -> Maybe.empty()
             is DownloadResult.Chunk -> {
-                print("\rDownloading chunk $chunkNo")
+                print("\rDownloaded chunk $chunkNo")
                 Maybe.just(result)
             }
             is DownloadResult.InvalidETag -> Maybe.error(
@@ -165,6 +182,14 @@ interface ChunkRepo {
     fun get(chunkNo: Int): ByteArray?
     fun set(chunkNo: Int, chunk: ByteArray)
     fun chunks(): Sequence<ByteArray>
+
+    fun firstGap(): Int {
+        var chunkNo = 0
+        while (get(chunkNo) != null) {
+            chunkNo++
+        }
+        return chunkNo
+    }
 }
 
 class InMemoryChunkRepo : ChunkRepo {
