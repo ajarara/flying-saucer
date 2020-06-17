@@ -9,12 +9,14 @@ import io.ajarara.flyingSaucer.download.HeadResponse
 import io.ajarara.flyingSaucer.download.Headers
 import io.ajarara.flyingSaucer.validation.ArchiveUrlValidationError
 import io.ajarara.flyingSaucer.validation.parseMovie
+import io.reactivex.Flowable
 import io.reactivex.Maybe
 import io.reactivex.Observable
 import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -23,11 +25,11 @@ object Main : CliktCommand() {
     private val tempDir = File(System.getProperty("java.io.tmpdir"))
 
     private val archiveUrl: String by option(help = "Mp4 to download from archive.org")
-        .default("https://archive.org/download/Plan_9_from_Outer_Space_1959/Plan_9_from_Outer_Space_1959_512kb.mp4")
+        .default("https://archive.org/download/Popeye_forPresident/Popeye_forPresident_512kb.mp4")
 
     private val concurrentRequestMax: Int by option(help = "Number of requests to run simultaneously")
         .int()
-        .default(4)
+        .default(32)
 
     private val noCache: Boolean by option(help = "Do not cache chunks on disk in between runs")
         .flag()
@@ -91,7 +93,8 @@ object Main : CliktCommand() {
 
         println()
         val endOfFileReached = AtomicBoolean()
-        Observable.range(0, Int.MAX_VALUE)
+        Observable.interval(10, TimeUnit.MILLISECONDS)
+            .map { it.toInt() }
             .takeUntil { endOfFileReached.get() }
             .filter { chunkRepo.get(it) == null }
             .flatMap({ chunkNo ->
@@ -107,7 +110,9 @@ object Main : CliktCommand() {
         println()
 
         out.apply {
-            createNewFile()
+            require(createNewFile()) {
+                "$name was created after we checked but before we finished downloading!"
+            }
             chunkRepo.chunks().forEach(::appendBytes)
         }
 
