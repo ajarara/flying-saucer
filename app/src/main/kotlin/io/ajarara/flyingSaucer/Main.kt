@@ -118,17 +118,16 @@ object Main : CliktCommand() {
         println()
 
         val endOfFileReached = AtomicBoolean()
-
-        Flowable.generate(Callable {0}, BiFunction { chunkNo: Int, emitter: Emitter<Int> ->
+        val generator = BiConsumer { chunkNo: Int, emitter: Emitter<Int> ->
             if (endOfFileReached.get()) {
                 emitter.onComplete()
-                -1
+                -1 // never fed back into the scan
             } else {
                 emitter.onNext(chunkNo)
                 chunkNo + 1
             }
-        })
-            .takeUntil { endOfFileReached.get() }
+        }
+        Flowable.generate(Callable {0}, generator)
             .flatMapMaybe({ chunkNo ->
                 val bytes = Headers.bytesOf(chunkNo, chunkSize)
 
@@ -137,27 +136,7 @@ object Main : CliktCommand() {
                     .flatMapMaybe { handleResponse(chunkNo, it) }
                     .retry(2)
             }, false, concurrentRequestMax)
-            .blockingSubscribe(object : Subscriber<DownloadResult.Chunk> {
-
-                lateinit var subscription: Subscription
-
-                override fun onSubscribe(subscription: Subscription) {
-                    this.subscription = subscription
-                    subscription.request(1)
-                }
-
-                override fun onNext(chunk: DownloadResult.Chunk) {
-                    chunkRepo.set(chunk.number, chunk.data)
-                    subscription.request(1)
-                }
-
-                override fun onError(t: Throwable) {
-                    println(t.message)
-                    exitProcess(-1)
-                }
-
-                override fun onComplete() {}
-            })
+            .blockingSubscribe(subscriberFor(chunkRepo))
 
         outputLocation.apply {
             require(createNewFile()) {
@@ -209,6 +188,27 @@ object Main : CliktCommand() {
                 )
             )
         }
+
+    private fun subscriberFor(chunkRepo: ChunkRepo) = object : Subscriber<DownloadResult.Chunk> {
+        lateinit var subscription: Subscription
+
+        override fun onSubscribe(subscription: Subscription) {
+            this.subscription = subscription
+            subscription.request(1)
+        }
+
+        override fun onNext(chunk: DownloadResult.Chunk) {
+            chunkRepo.set(chunk.number, chunk.data)
+            subscription.request(1)
+        }
+
+        override fun onError(t: Throwable) {
+            println(t.message)
+            exitProcess(-1)
+        }
+
+        override fun onComplete() {}
+    }
 }
 
 fun main(args: Array<String>) = Main.main(args)
