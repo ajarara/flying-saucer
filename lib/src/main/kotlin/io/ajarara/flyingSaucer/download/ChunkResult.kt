@@ -2,18 +2,18 @@ package io.ajarara.flyingSaucer.download
 
 import java.net.HttpURLConnection
 
-sealed class DownloadResult {
+sealed class ChunkResult {
 
-    object Empty : DownloadResult()
+    object Empty : ChunkResult()
 
-    object InvalidETag : DownloadResult()
+    object InvalidETag : ChunkResult()
 
-    class Chunk(val number: Int, val data: ByteArray) : DownloadResult()
+    class Chunk(val number: Int, val data: ByteArray) : ChunkResult()
 
-    object Unknown : DownloadResult()
+    object Unknown : ChunkResult()
 
     companion object {
-        fun from(code: Int, chunkNo: Int, body: ByteArray?): DownloadResult {
+        fun from(code: Int, chunkNo: Int, body: ByteArray?): ChunkResult {
             return when (code) {
                 416 -> Empty
                 HttpURLConnection.HTTP_PARTIAL -> Chunk(chunkNo, body!!)

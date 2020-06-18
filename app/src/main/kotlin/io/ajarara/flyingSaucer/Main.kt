@@ -4,24 +4,19 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.michaelbull.result.*
-import io.ajarara.flyingSaucer.download.DownloadResult
+import io.ajarara.flyingSaucer.download.ChunkResult
 import io.ajarara.flyingSaucer.download.HeadResponse
 import io.ajarara.flyingSaucer.download.Headers
 import io.ajarara.flyingSaucer.validation.ArchiveUrlValidationError
 import io.ajarara.flyingSaucer.validation.parseMovie
 import io.reactivex.*
-import io.reactivex.disposables.Disposable
-import io.reactivex.functions.BiConsumer
 import io.reactivex.functions.BiFunction
-import io.reactivex.schedulers.Schedulers
 import org.reactivestreams.Subscriber
 import org.reactivestreams.Subscription
 import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
 import java.util.concurrent.Callable
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess
 
@@ -118,22 +113,13 @@ object Main : CliktCommand() {
         println()
 
         val endOfFileReached = AtomicBoolean()
-        val generator = BiConsumer { chunkNo: Int, emitter: Emitter<Int> ->
-            if (endOfFileReached.get()) {
-                emitter.onComplete()
-                -1 // never fed back into the scan
-            } else {
-                emitter.onNext(chunkNo)
-                chunkNo + 1
-            }
-        }
-        Flowable.generate(Callable {0}, generator)
+        Flowable.generate(Callable {0}, generatorFor(gate = endOfFileReached))
             .flatMapMaybe({ chunkNo ->
                 val bytes = Headers.bytesOf(chunkNo, chunkSize)
 
                 ArchiveAPI.Impl.download(downloadPath, bytes, etag.etag)
                     .doOnSuccess { if (it.code() == 416) endOfFileReached.set(true) }
-                    .flatMapMaybe { handleResponse(chunkNo, it) }
+                    .flatMapMaybe { handleChunkResponse(chunkNo, it) }
                     .retry(2)
             }, false, concurrentRequestMax)
             .blockingSubscribe(subscriberFor(chunkRepo))
@@ -170,26 +156,26 @@ object Main : CliktCommand() {
             }
         }
 
-    private fun handleResponse(chunkNo: Int, response: Response<ByteArray>): Maybe<DownloadResult.Chunk> =
-        when (val result = DownloadResult.from(response.code(), chunkNo, response.body())) {
-            is DownloadResult.Empty -> Maybe.empty()
-            is DownloadResult.Chunk -> {
+    private fun handleChunkResponse(chunkNo: Int, response: Response<ByteArray>): Maybe<ChunkResult.Chunk> =
+        when (val result = ChunkResult.from(response.code(), chunkNo, response.body())) {
+            is ChunkResult.Empty -> Maybe.empty()
+            is ChunkResult.Chunk -> {
                 print("\rDownloaded chunk $chunkNo")
                 Maybe.just(result)
             }
-            is DownloadResult.InvalidETag -> Maybe.error(
+            is ChunkResult.InvalidETag -> Maybe.error(
                 IllegalStateException(
                     "ETag changed while downloading at chunk $chunkNo! All previous chunks are invalid."
                 )
             )
-            is DownloadResult.Unknown -> Maybe.error(
+            is ChunkResult.Unknown -> Maybe.error(
                 IllegalStateException(
                     "Unknown response code ${response.code()}, message ${response.message()}"
                 )
             )
         }
 
-    private fun subscriberFor(chunkRepo: ChunkRepo) = object : Subscriber<DownloadResult.Chunk> {
+    private fun subscriberFor(chunkRepo: ChunkRepo) = object : Subscriber<ChunkResult.Chunk> {
         lateinit var subscription: Subscription
 
         override fun onSubscribe(subscription: Subscription) {
@@ -197,7 +183,7 @@ object Main : CliktCommand() {
             subscription.request(1)
         }
 
-        override fun onNext(chunk: DownloadResult.Chunk) {
+        override fun onNext(chunk: ChunkResult.Chunk) {
             chunkRepo.set(chunk.number, chunk.data)
             subscription.request(1)
         }
@@ -208,6 +194,16 @@ object Main : CliktCommand() {
         }
 
         override fun onComplete() {}
+    }
+
+    private fun generatorFor(gate: AtomicBoolean) = BiFunction { chunkNo: Int, emitter: Emitter<Int> ->
+        if (gate.get()) {
+            emitter.onComplete()
+            -1 // never fed back into the scan
+        } else {
+            emitter.onNext(chunkNo)
+            chunkNo + 1
+        }
     }
 }
 

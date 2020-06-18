@@ -15,7 +15,7 @@ internal class ArchiveUrlValidationKtTest: StringSpec({
 
         parsed.expectError { "Prose is not a valid archive.org movie link" }
         val invalidSyntax = parsed.error as ArchiveUrlValidationError.InvalidURLSyntax
-        invalidSyntax.unsanitizedInput shouldBe input
+        invalidSyntax.inputString shouldBe input
     }
 
     "a valid URI that does not point to archive.org is unknown" {
