@@ -4,12 +4,9 @@ A multisource video downloader for archive.org videos.
 
 
 ## Workflow
-First, if the cache to disk flag is set or 
-First check to see if the output folder exists. The default is "/tmp", which won't work on non-unix platforms.
+Require the passed in URL as a 
 
 
-
-Given a valid archive.org download URL, head the resource, require the URL to support range requests.
 
 From the same head request, keep track of the ETag, and use it to break out if any download doesn't satisfy the If-Match clause:
 https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.24

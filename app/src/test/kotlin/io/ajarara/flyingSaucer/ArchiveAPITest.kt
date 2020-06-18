@@ -10,7 +10,6 @@ import java.net.HttpURLConnection
 
 internal class ArchiveAPITest : StringSpec({
 
-
     "check HEADs against a known Accept-Range endpoint" {
         val response = ArchiveAPI.Impl.check(plan9)
             .blockingGet()
@@ -43,7 +42,12 @@ internal class ArchiveAPITest : StringSpec({
 
     "a download request that has a range that exceeds content length returns a 416" {
         val unsatisfiableRequest = contentLength(plan9)
-            .flatMap { contentLength -> ArchiveAPI.Impl.download(plan9, "bytes=$contentLength-${contentLength+10}") }
+            .flatMap { contentLength ->
+                ArchiveAPI.Impl.uncheckedDownload(
+                    plan9,
+                    "bytes=$contentLength-${contentLength+10}"
+                )
+            }
             .blockingGet()
 
         unsatisfiableRequest.code() shouldBe rangeUnsatisfiableCode
@@ -51,7 +55,12 @@ internal class ArchiveAPITest : StringSpec({
 
     "a download request that spans across the content length returns a 206" {
         val satisfiedSpanningRequest = contentLength(plan9)
-            .flatMap { contentLength -> ArchiveAPI.Impl.download(plan9, "bytes=${contentLength-10}-${contentLength+10}")}
+            .flatMap { contentLength ->
+                ArchiveAPI.Impl.uncheckedDownload(
+                    plan9,
+                    "bytes=${contentLength-10}-${contentLength+10}"
+                )
+            }
             .blockingGet()
 
 
