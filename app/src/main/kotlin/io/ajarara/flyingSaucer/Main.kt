@@ -31,7 +31,7 @@ object Main : CliktCommand() {
         .int()
         .default(8)
         .validate {
-            check (it > 0) {
+            check(it > 0) {
                 "Maximum of concurrent requests must be greater than 0!"
             }
         }
@@ -49,6 +49,14 @@ object Main : CliktCommand() {
                 require(tempDir.canWrite()) {
                     "This platform's temp directory is not writeable, and cannot cache chunks."
                 }
+            }
+        }
+
+    private val outputDirectory: String by option(help = "Output directory of video")
+        .default(System.getProperty("user.dir"))
+        .validate { outputDirectory ->
+            require(File(outputDirectory).exists()) {
+                "$outputDirectory does not exist!"
             }
         }
 
@@ -82,9 +90,9 @@ object Main : CliktCommand() {
     }
 
     private fun reserveOutput(downloadPath: String): File {
-        return File(System.getProperty("user.dir"), downloadPath.substringAfterLast("/")).apply {
+        return File(outputDirectory, downloadPath.substringAfterLast("/")).apply {
             if (exists()) {
-                println("File $name already exists! Aborting.")
+                println("File $name already exists in directory $outputDirectory! Aborting.")
                 exitProcess(-1)
             }
         }
@@ -100,36 +108,37 @@ object Main : CliktCommand() {
 
     private fun createRepo(fileRepoFolder: String, etag: HeadResponse.ETag): ChunkRepo =
         if (noCache) {
-        InMemoryChunkRepo()
-    } else {
-        val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
-        println("Stashing chunks in: ${projectDir.path}")
-        DiskBackedChunkRepo(projectDir, fileRepoFolder, etag)
-    }
+            InMemoryChunkRepo()
+        } else {
+            val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
+            println("Stashing chunks in: ${projectDir.path}")
+            DiskBackedChunkRepo(projectDir, fileRepoFolder, etag)
+        }
 
     private fun download(
         downloadPath: String,
         chunkRepo: ChunkRepo,
         etag: HeadResponse.ETag,
-        outputLocation: File
+        outputFile: File
     ) {
         val start = chunkRepo.firstGap()
         if (start != 0) println("Starting at chunk $start")
         println()
 
         val endOfFileReached = AtomicBoolean()
-        Flowable.generate(Callable {0}, generatorFor(gate = endOfFileReached))
-            .flatMapMaybe({ chunkNo ->
+        Flowable.generate(Callable { start }, generatorFor(gate = endOfFileReached))
+            .filter { chunkRepo.get(it) == null }
+            .flatMapSingle({ chunkNo ->
                 val bytes = Headers.bytesOf(chunkNo, chunkSize)
 
                 ArchiveAPI.Impl.download(downloadPath, bytes, etag.etag)
                     .doOnSuccess { if (it.code() == 416) endOfFileReached.set(true) }
-                    .flatMapMaybe { handleChunkResponse(chunkNo, it) }
+                    .map { ChunkResult.from(it.code(), chunkNo, it.body()) }
                     .retry(2)
             }, false, concurrentRequestMax)
             .blockingSubscribe(subscriberFor(chunkRepo))
 
-        outputLocation.apply {
+        outputFile.apply {
             require(createNewFile()) {
                 "$name was created after we checked but before we finished downloading!"
             }
@@ -161,26 +170,7 @@ object Main : CliktCommand() {
             }
         }
 
-    private fun handleChunkResponse(chunkNo: Int, response: Response<ByteArray>): Maybe<ChunkResult.Chunk> =
-        when (val result = ChunkResult.from(response.code(), chunkNo, response.body())) {
-            is ChunkResult.Empty -> Maybe.empty()
-            is ChunkResult.Chunk -> {
-                print("\rDownloaded chunk $chunkNo")
-                Maybe.just(result)
-            }
-            is ChunkResult.InvalidETag -> Maybe.error(
-                IllegalStateException(
-                    "ETag changed while downloading at chunk $chunkNo! All previous chunks are invalid."
-                )
-            )
-            is ChunkResult.Unknown -> Maybe.error(
-                IllegalStateException(
-                    "Unknown response code ${response.code()}, message ${response.message()}"
-                )
-            )
-        }
-
-    private fun subscriberFor(chunkRepo: ChunkRepo) = object : Subscriber<ChunkResult.Chunk> {
+    private fun subscriberFor(chunkRepo: ChunkRepo) = object : Subscriber<ChunkResult> {
         lateinit var subscription: Subscription
 
         override fun onSubscribe(subscription: Subscription) {
@@ -188,10 +178,27 @@ object Main : CliktCommand() {
             subscription.request(1)
         }
 
-        override fun onNext(chunk: ChunkResult.Chunk) {
-            chunkRepo.set(chunk.number, chunk.data)
-            subscription.request(1)
-        }
+        override fun onNext(chunk: ChunkResult) =
+            when (chunk) {
+                is ChunkResult.Empty -> subscription.request(1)
+                is ChunkResult.InvalidETag -> {
+                    println()
+                    println("ETag changed while downloading at chunk ${chunk.chunkNo}! All previous chunks are invalid.")
+                    subscription.cancel()
+                    exitProcess(-1)
+                }
+                is ChunkResult.UnknownCode -> {
+                    println()
+                    println("Unknown code returned from Archive.org. Aborting.")
+                    subscription.cancel()
+                    exitProcess(-1)
+                }
+                is ChunkResult.Chunk -> {
+                    print("\rDownloaded chunk ${chunk.number}")
+                    chunkRepo.set(chunk.number, chunk.data)
+                    subscription.request(1)
+                }
+            }
 
         override fun onError(t: Throwable) {
             println(t.message)
