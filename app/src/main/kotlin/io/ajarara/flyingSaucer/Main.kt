@@ -9,13 +9,17 @@ import io.ajarara.flyingSaucer.download.HeadResponse
 import io.ajarara.flyingSaucer.download.Headers
 import io.ajarara.flyingSaucer.validation.ArchiveUrlValidationError
 import io.ajarara.flyingSaucer.validation.parseMovie
-import io.reactivex.Maybe
-import io.reactivex.Observable
-import io.reactivex.Observer
+import io.reactivex.*
 import io.reactivex.disposables.Disposable
+import io.reactivex.functions.BiConsumer
+import io.reactivex.functions.BiFunction
+import io.reactivex.schedulers.Schedulers
+import org.reactivestreams.Subscriber
+import org.reactivestreams.Subscription
 import retrofit2.Response
 import java.io.File
 import java.lang.IllegalStateException
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -67,54 +71,84 @@ object Main : CliktCommand() {
                 }
                 exitProcess(-1)
             }
-            .map { download(it) }
+            .map { downloadPath ->
+                val fileRepoFolder = downloadPath.substringBefore("/")
+                val outputLocation = reserveOutput(downloadPath)
+                val etag = getEtag(downloadPath)
+                val chunkRepo = createRepo(fileRepoFolder, etag)
+
+                download(downloadPath, chunkRepo, etag, outputLocation)
+            }
     }
 
-    private fun download(movie: String) {
-        val fileRepoFolder = movie.substringBefore("/")
-        val out = File(System.getProperty("user.dir"), movie.substringAfterLast("/")).apply {
+    private fun reserveOutput(downloadPath: String): File {
+        return File(System.getProperty("user.dir"), downloadPath.substringAfterLast("/")).apply {
             if (exists()) {
                 println("File $name already exists! Aborting.")
                 exitProcess(-1)
             }
         }
+    }
 
+    private fun getEtag(movie: String): HeadResponse.ETag {
         print("Checking if the download '$movie' exists: ")
         val headResponse = ArchiveAPI.Impl.check(movie)
             .map { HeadResponse.of(it.code(), it.headers().toMultimap()) }
             .blockingGet()
-        val etag = handleHeadResponse(headResponse)
+        return handleHeadResponse(headResponse)
+    }
 
-        val chunkRepo = if (noCache) {
-            InMemoryChunkRepo()
-        } else {
-            val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
-            println("Stashing chunks in: ${projectDir.path}")
-            DiskBackedChunkRepo(projectDir, fileRepoFolder, etag)
-        }
+    private fun createRepo(fileRepoFolder: String, etag: HeadResponse.ETag): ChunkRepo =
+        if (noCache) {
+        InMemoryChunkRepo()
+    } else {
+        val projectDir = File(tempDir, "io.ajarara.flyingSaucer").apply { mkdir() }
+        println("Stashing chunks in: ${projectDir.path}")
+        DiskBackedChunkRepo(projectDir, fileRepoFolder, etag)
+    }
 
+    private fun download(
+        downloadPath: String,
+        chunkRepo: ChunkRepo,
+        etag: HeadResponse.ETag,
+        outputLocation: File
+    ) {
         val start = chunkRepo.firstGap()
         if (start != 0) println("Starting at chunk $start")
         println()
 
         val endOfFileReached = AtomicBoolean()
 
-        Observable.interval(0, 100, TimeUnit.MILLISECONDS)
-            .map { it.toInt() + start }
+        Flowable.generate(Callable {0}, BiFunction { chunkNo: Int, emitter: Emitter<Int> ->
+            if (endOfFileReached.get()) {
+                emitter.onComplete()
+                -1
+            } else {
+                emitter.onNext(chunkNo)
+                chunkNo + 1
+            }
+        })
             .takeUntil { endOfFileReached.get() }
-            .flatMap({ chunkNo ->
+            .flatMapMaybe({ chunkNo ->
                 val bytes = Headers.bytesOf(chunkNo, chunkSize)
 
-                ArchiveAPI.Impl.download(movie, bytes, etag.etag)
+                ArchiveAPI.Impl.download(downloadPath, bytes, etag.etag)
                     .doOnSuccess { if (it.code() == 416) endOfFileReached.set(true) }
                     .flatMapMaybe { handleResponse(chunkNo, it) }
                     .retry(2)
-                    .toObservable()
             }, false, concurrentRequestMax)
-            .blockingSubscribe(object : Observer<DownloadResult.Chunk> {
+            .blockingSubscribe(object : Subscriber<DownloadResult.Chunk> {
+
+                lateinit var subscription: Subscription
+
+                override fun onSubscribe(subscription: Subscription) {
+                    this.subscription = subscription
+                    subscription.request(1)
+                }
 
                 override fun onNext(chunk: DownloadResult.Chunk) {
                     chunkRepo.set(chunk.number, chunk.data)
+                    subscription.request(1)
                 }
 
                 override fun onError(t: Throwable) {
@@ -123,10 +157,9 @@ object Main : CliktCommand() {
                 }
 
                 override fun onComplete() {}
-                override fun onSubscribe(d: Disposable?) {}
             })
 
-        out.apply {
+        outputLocation.apply {
             require(createNewFile()) {
                 "$name was created after we checked but before we finished downloading!"
             }
@@ -198,6 +231,9 @@ class InMemoryChunkRepo : ChunkRepo {
     override fun get(chunkNo: Int): ByteArray? = chunkMap[chunkNo]
 
     override fun set(chunkNo: Int, chunk: ByteArray) {
+        check(chunkNo !in chunkMap) {
+            "Overwriting chunk $chunkNo in memory! This is an error!"
+        }
         chunkMap[chunkNo] = chunk
     }
 
