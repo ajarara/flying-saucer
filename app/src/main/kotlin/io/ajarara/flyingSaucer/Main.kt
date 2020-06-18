@@ -13,9 +13,7 @@ import io.reactivex.*
 import io.reactivex.functions.BiFunction
 import org.reactivestreams.Subscriber
 import org.reactivestreams.Subscription
-import retrofit2.Response
 import java.io.File
-import java.lang.IllegalStateException
 import java.util.concurrent.Callable
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.system.exitProcess

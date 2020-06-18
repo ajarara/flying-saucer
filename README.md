@@ -11,6 +11,7 @@ Options:
   --archive-url TEXT            Mp4 to download from archive.org
   --concurrent-request-max INT  Number of requests to run simultaneously
   --no-cache                    Do not cache chunks on disk in between runs
+  --output-directory TEXT       Output directory of video
   -h, --help                    Show this message and exit
 ```
 
