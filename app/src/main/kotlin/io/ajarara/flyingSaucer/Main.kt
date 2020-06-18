@@ -30,6 +30,11 @@ object Main : CliktCommand() {
     private val concurrentRequestMax: Int by option(help = "Number of requests to run simultaneously")
         .int()
         .default(8)
+        .validate {
+            check (it > 0) {
+                "Maximum of concurrent requests must be greater than 0!"
+            }
+        }
 
     private val noCache: Boolean by option(help = "Do not cache chunks on disk in between runs")
         .flag()
